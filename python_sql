@@ -580,4 +580,140 @@ if __name__ == "__main__":
 
     extract_data(sql_stmt, SrcDBType, SrcDatabase, SrcDBConjurVault, TgtFile, TgtQtChr, TgtDelim)
 
+--------------------------------------------------------------------------------------8/28_v3-------------------------------------------------
+
+import sys
+import traceback
+import oracledb
+from grp_python_innersource_conjur import USAAConjur
+from ldap3 import Server, Connection, SUBTREE
+import os
+import csv
+import re
+import jaydebeapi
+import shutil
+from datetime import datetime
+from sf_utils import *
+
+startTS = datetime.now()
+print('Inside the DB python: Start Time : {}'.format(startTS))
+
+ROOT_DIR = os.path.abspath(os.curdir)
+print('Root Dir : {}'.format(ROOT_DIR))
+
+
+def executeSelect(sql_curs, sql_stmt, chunk_size=1000):
+    try:
+        sql_curs.execute(sql_stmt)
+        headers = [i[0] for i in sql_curs.description]
+        total_rows_fetched = 0  # Counter to keep track of the total number of rows fetched
+        while True:
+            rows = sql_curs.fetchmany(chunk_size)
+            if not rows:
+                break
+            total_rows_fetched += len(rows)
+            print(f"Fetched {len(rows)} rows. Total rows fetched so far: {total_rows_fetched}")
+            yield headers, rows, total_rows_fetched
+    except Exception:
+        print("Error in execute")
+        print("Exception in user code:")
+        print("-" * 60)
+        traceback.print_exc(file=sys.stdout)
+        print("-" * 60)
+        raise Exception("Error in executing the SQL.")
+
+
+def mfp_rules(string, TgtQtChr, TgtDelim, EscChar):
+    if string.find(TgtQtChr) >= 0:
+        return TgtQtChr + string.replace(TgtQtChr, EscChar + TgtQtChr) + TgtQtChr
+    if string.find(TgtDelim) >= 0:
+        return TgtQtChr + string + TgtQtChr
+    return string
+
+
+def extract_data(sql_stmt, SrcDBType, SrcDatabase, SrcDBConjurVault, TgtFile, TgtQtChr='"', TgtDelim=','):
+
+    sql_stmt = sql_stmt.rstrip(' ').rstrip(';')
+    DBENV = os.environ.get('DBENV')
+    DB_SERVER = os.environ.get('SRC_DB_SERVER')
+    DB_JDBC_URL = os.environ.get('JDBC_CONNECTION_STRING')
+    DB_DRIVER = os.environ.get('JDBC_TDS')
+    ESCAPE_CHARACTER = os.environ.get('ESCAPE_CHARACTER')
+    EscChar = ESCAPE_CHARACTER
+    
+    print(f'SrcDBConjurVault..: [{SrcDBConjurVault}]')
+    print(f'SrcDBType......: [{SrcDBType}]')
+    print(f'SrcDatabase....: [{SrcDatabase}]')
+    print(f'TgtFile........: [{TgtFile}]')
+    print(f'TgtQtChr.......: [{TgtQtChr}]')
+    print(f'TgtDelim.......: [{TgtDelim}]')
+    print(f'EscChar........: [{EscChar}]')
+    print(f'DBENV..........: [{DBENV}]')
+    print(f'sql_stmt.......: [{sql_stmt}]')
+
+    if DBENV == None:
+        raise Exception('DBENV environment variable should be defined')
+
+    if SrcDBType == 'ORACLE':
+        db_user, db_pwd = getConjurCreds(SrcDBConjurVault)
+        sql_conn = createDBconnection(db_user, db_pwd, DBENV + SrcDatabase, DB_SERVER)
+
+    elif SrcDBType == 'SQLSERVER':
+        db_user, db_pwd = getConjurCreds(SrcDBConjurVault)
+        jdbc_driver_loc = '/deployments/JDBC_libs/jtds-1.3.1.jar'
+        sql_conn = jaydebeapi.connect(DB_DRIVER, DB_JDBC_URL, {'user': db_user, 'password': db_pwd}, jars=jdbc_driver_loc)
+
+    else:
+        raise Exception('Invalid SrcDBType: ' + SrcDBType)
+
+    try:
+        sql_curs = sql_conn.cursor()
+        # Open the file and get the handler
+        with open(TgtFile, "w") as csv_file:
+            writer = csv.writer(csv_file,
+                                delimiter=TgtDelim,
+                                quoting=csv.QUOTE_MINIMAL,
+                                quotechar=TgtQtChr,
+                                doublequote=False,
+                                escapechar='\\')
+            first_chunk = True
+            total_rows_written = 0  # Counter to keep track of the total number of rows written
+
+            for headers, sql_result, total_rows_fetched in executeSelect(sql_curs, sql_stmt):
+                if first_chunk:
+                    writer.writerow(headers)  # Write headers once
+                    first_chunk = False
+
+                writer.writerows(sql_result)
+                total_rows_written += len(sql_result)
+                print(f"Written {total_rows_written} rows to the file so far. Remaining rows to process: {total_rows_fetched - total_rows_written}")
+
+        print('SQL Executed and written to file.')
+    except Exception:
+        print("Error in getting the cursor and executing it.")
+        print("-" * 60)
+        traceback.print_exc(file=sys.stdout)
+        print("-" * 60)
+        raise Exception("Error in getting the cursor and executing it.")
+    finally:
+        # Close the connection and the cursor
+        sql_curs.close()
+        sql_conn.close()
+
+    endTS = datetime.now()
+    print("Extracted rows are written to the file: " + TgtFile)
+    print('Inside the DB python: Start Time : {}'.format(startTS))
+    print('Inside the DB python: End Time : {}'.format(endTS))
+
+
+if __name__ == "__main__":
+    sql_stmt = sys.argv[1].rstrip(' ').rstrip(';')
+    SrcDBType = sys.argv[2]
+    SrcDatabase = sys.argv[3]
+    SrcDBConjurVault = sys.argv[4]
+    TgtFile = sys.argv[5]
+    TgtQtChr = sys.argv[6]
+    TgtDelim = sys.argv[7]
+
+    extract_data(sql_stmt, SrcDBType, SrcDatabase, SrcDBConjurVault, TgtFile, TgtQtChr, TgtDelim)
 
